@@ -1,0 +1,51 @@
+name: Snyk Security Scan with SARIF Upload and Issue Creation 
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  actions: write
+  issues: write  # Grant permission to create issues
+  security-events: write
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/python@master
+        continue-on-error: true
+        env: 
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: code test
+          args: "--sarif-file-output=path/snyk.sarif"
+
+      - name: Check if SARIF file exists and print contents
+        run: |
+          ls -la  # List files to check if snyk.sarif exists
+          cat path/snyk.sarif  # Display the contents of the SARIF file
+
+      - name: Upload SARIF report to GitHub
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: path/snyk.sarif
+          token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-processing: true
+
+      - name: Create GitHub Issues from SARIF
+        if: success() && steps.upload-sarif.outputs.upload-success == 'true'
+        run: |
+          issues=$(cat path/snyk.sarif | jq -r '.runs[0].results[] | "\(.message.text) - URI: \(.locations[0].physicalLocation.artifactLocation.uri)"')
+          
+          for issue in $issues; do
+            # Create issue for each vulnerability found
+            curl -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -d '{"title": "Security Issue: " + issue, "body": "Description: This issue was detected by SARIF scan. Please review.", "labels": ["security", "vulnerability"]}' \
+              https://api.github.com/repos/${{ github.repository }}/issues
+          done 
